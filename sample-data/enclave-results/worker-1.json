@@ -1,0 +1,8 @@
+{
+  "workerIndex": 1,
+  "cid": 19,
+  "status": "success",
+  "durationMs": 3510,
+  "artifactHash": "sha256:b2aa94b91bb009b7",
+  "message": "Build reproduced and attested."
+}

@@ -1,0 +1,8 @@
+{
+  "workerIndex": 0,
+  "cid": 18,
+  "status": "success",
+  "durationMs": 3140,
+  "artifactHash": "sha256:1d0b1f9e2ec35c9a",
+  "message": "Signed result persisted successfully."
+}

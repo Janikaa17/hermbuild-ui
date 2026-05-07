@@ -1,0 +1,8 @@
+{
+  "workerIndex": 2,
+  "cid": 20,
+  "status": "failed",
+  "durationMs": 3380,
+  "errorCode": "HASH_MISMATCH",
+  "message": "Manifest verification failed inside enclave."
+}

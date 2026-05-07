@@ -163,6 +163,13 @@ const API_ROOT = import.meta.env.DEV ? "/api" : API_BASE_URL;
 const INITIAL_FLOW_STATUS = Object.fromEntries(
   FLOW_MILESTONES.map((eventName) => [eventName, "pending"]),
 ) as Record<string, PhaseStatus>;
+const createFlowStatusByWorker = (workerCount: number) =>
+  Object.fromEntries(
+    Array.from({ length: workerCount }, (_, workerIndex) => [
+      workerIndex,
+      { ...INITIAL_FLOW_STATUS },
+    ]),
+  ) as Record<number, Record<string, PhaseStatus>>;
 
 const DEFAULT_CONFIG: RunConfig = {
   repo_url: "file:///home/ec2-user/major-project/demo-node-app",
@@ -208,8 +215,9 @@ function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
-  const [flowStatus, setFlowStatus] =
-    useState<Record<string, PhaseStatus>>(INITIAL_FLOW_STATUS);
+  const [flowStatusByWorker, setFlowStatusByWorker] = useState<
+    Record<number, Record<string, PhaseStatus>>
+  >(createFlowStatusByWorker(DEFAULT_CONFIG.enclave_count));
   const [finalCounts, setFinalCounts] = useState<{
     passed: number;
     failed: number;
@@ -270,7 +278,7 @@ function App() {
     setWorkers(createWorkers(config));
     setLogs([]);
     setConfigError("");
-    setFlowStatus(INITIAL_FLOW_STATUS);
+    setFlowStatusByWorker(createFlowStatusByWorker(config.enclave_count));
     setFinalCounts(null);
   };
 
@@ -282,11 +290,35 @@ function App() {
     );
   };
 
-  const setEventStatus = (eventName: EventName, status: PhaseStatus) => {
+  const setEventStatus = (
+    eventName: EventName,
+    status: PhaseStatus,
+    workerIndex?: number,
+  ) => {
     if (!FLOW_MILESTONES.includes(eventName)) {
       return;
     }
-    setFlowStatus((prev) => ({ ...prev, [eventName]: status }));
+    setFlowStatusByWorker((prev) => {
+      if (typeof workerIndex === "number") {
+        const currentWorkerStatus = prev[workerIndex] ?? { ...INITIAL_FLOW_STATUS };
+        return {
+          ...prev,
+          [workerIndex]: {
+            ...currentWorkerStatus,
+            [eventName]: status,
+          },
+        };
+      }
+
+      const next: Record<number, Record<string, PhaseStatus>> = {};
+      Object.entries(prev).forEach(([workerKey, workerStatus]) => {
+        next[Number(workerKey)] = {
+          ...workerStatus,
+          [eventName]: status,
+        };
+      });
+      return next;
+    });
   };
 
   const updateWorkerFromEvent = (payload: SsePayload, eventName: string) => {
@@ -376,15 +408,15 @@ function App() {
       return;
     }
     if (eventName.endsWith("_started")) {
-      setEventStatus(eventName, "running");
+      setEventStatus(eventName, "running", payload.worker_index);
     } else {
-      setEventStatus(eventName, "success");
+      setEventStatus(eventName, "success", payload.worker_index);
     }
     if (FAILURE_EVENTS.includes(eventName)) {
       setRunStatus("failed");
       setErrorMessage(payload.error ?? payload.exception ?? eventName);
       if (eventName === "pipeline_failed") {
-        setEventStatus("pipeline_completed", "failed");
+        setEventStatus("pipeline_completed", "failed", payload.worker_index);
       }
     }
     if (COMPLETE_EVENTS.includes(eventName)) {
@@ -547,11 +579,73 @@ function App() {
     });
   }, [logs, activeLevel, workerFilter, query]);
 
-  const completedPhases = SUCCESS_PROGRESS_EVENTS.filter(
-    (eventName) => flowStatus[eventName] === "success",
-  ).length;
-  const phaseProgress = SUCCESS_PROGRESS_EVENTS.length
-    ? Math.round((completedPhases / SUCCESS_PROGRESS_EVENTS.length) * 100)
+  const workerFlowData = useMemo(
+    () =>
+      workers.map((worker) => {
+        const workerFlowStatus =
+          flowStatusByWorker[worker.workerIndex] ?? INITIAL_FLOW_STATUS;
+        const completedPhases = SUCCESS_PROGRESS_EVENTS.filter(
+          (eventName) => workerFlowStatus[eventName] === "success",
+        ).length;
+        const progress = SUCCESS_PROGRESS_EVENTS.length
+          ? Math.round((completedPhases / SUCCESS_PROGRESS_EVENTS.length) * 100)
+          : 0;
+        const nodes = FLOW_MILESTONES.map((eventName) => {
+          const status = workerFlowStatus[eventName];
+          const border =
+            status === "success"
+              ? "1px solid #34d399"
+              : status === "running"
+                ? "1px solid #5ea1ff"
+                : status === "failed"
+                  ? "1px solid #f87171"
+                  : "1px solid #4b5563";
+          const background =
+            status === "success"
+              ? "rgba(16, 90, 66, 0.5)"
+              : status === "running"
+                ? "repeating-linear-gradient(135deg, rgba(47, 93, 168, 0.72) 0 12px, rgba(28, 62, 122, 0.72) 12px 24px)"
+                : status === "failed"
+                  ? "rgba(115, 27, 27, 0.5)"
+                  : "rgba(26, 35, 56, 0.7)";
+          return {
+            id: eventName,
+            position: FLOW_LAYOUT[eventName],
+            data: {
+              label: `${formatEventLabel(eventName)}\n${status.toUpperCase()}`,
+            },
+            style: {
+              width: 280,
+              minHeight: 110,
+              whiteSpace: "pre-wrap",
+              border,
+              borderRadius: 14,
+              background,
+              color: "#e6ebfa",
+              fontSize: 14,
+              fontWeight: 600,
+              transition: "all 280ms ease",
+              animation:
+                status === "running"
+                  ? "flowNodePulse 1.4s ease-in-out infinite"
+                  : "none",
+            },
+          };
+        });
+
+        return {
+          workerIndex: worker.workerIndex,
+          progress,
+          nodes,
+        };
+      }),
+    [workers, flowStatusByWorker],
+  );
+  const phaseProgress = workerFlowData.length
+    ? Math.round(
+        workerFlowData.reduce((acc, workerFlow) => acc + workerFlow.progress, 0) /
+          workerFlowData.length,
+      )
     : 0;
   const runningWorkers = workers.filter(
     (worker) => worker.status === "running",
@@ -559,52 +653,6 @@ function App() {
   const successRate = summary.total
     ? Math.round((summary.passed / summary.total) * 100)
     : 0;
-  const flowNodes = useMemo(
-    () =>
-      FLOW_MILESTONES.map((eventName) => {
-        const status = flowStatus[eventName];
-        const border =
-          status === "success"
-            ? "1px solid #34d399"
-            : status === "running"
-              ? "1px solid #5ea1ff"
-              : status === "failed"
-                ? "1px solid #f87171"
-                : "1px solid #4b5563";
-        const background =
-          status === "success"
-            ? "rgba(16, 90, 66, 0.5)"
-            : status === "running"
-              ? "repeating-linear-gradient(135deg, rgba(47, 93, 168, 0.72) 0 12px, rgba(28, 62, 122, 0.72) 12px 24px)"
-              : status === "failed"
-                ? "rgba(115, 27, 27, 0.5)"
-                : "rgba(26, 35, 56, 0.7)";
-        return {
-          id: eventName,
-          position: FLOW_LAYOUT[eventName],
-          data: {
-            label: `${formatEventLabel(eventName)}\n${status.toUpperCase()}`,
-          },
-          style: {
-            width: 280,
-            minHeight: 110,
-            whiteSpace: "pre-wrap",
-            border,
-            borderRadius: 14,
-            background,
-            color: "#e6ebfa",
-            fontSize: 14,
-            fontWeight: 600,
-            transition: "all 280ms ease",
-            animation:
-              status === "running"
-                ? "flowNodePulse 1.4s ease-in-out infinite"
-                : "none",
-          },
-        };
-      }),
-    [flowStatus],
-  );
   const flowEdges = useMemo(
     () => [
       ...MAIN_FLOW_EVENTS.slice(0, -1).map((eventName, index) => ({
@@ -798,16 +846,26 @@ function App() {
                     style={{ width: `${phaseProgress}%` }}
                   />
                 </div>
-                <div className="flow-wrap">
-                  <ReactFlow
-                    nodes={flowNodes}
-                    edges={flowEdges}
-                    fitView
-                    fitViewOptions={{ maxZoom: 1.2, padding: 0.15 }}
-                  >
-                    <Controls />
-                    <Background />
-                  </ReactFlow>
+                <div className="flow-grid">
+                  {workerFlowData.map((workerFlow) => (
+                    <div className="worker-flow-card" key={`flow-${workerFlow.workerIndex}`}>
+                      <div className="worker-flow-head">
+                        <p>worker-{workerFlow.workerIndex}</p>
+                        <p>{workerFlow.progress}%</p>
+                      </div>
+                      <div className="flow-wrap worker-flow-wrap">
+                        <ReactFlow
+                          nodes={workerFlow.nodes}
+                          edges={flowEdges}
+                          fitView
+                          fitViewOptions={{ maxZoom: 1.2, padding: 0.15 }}
+                        >
+                          <Controls />
+                          <Background />
+                        </ReactFlow>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </article>
             </section>

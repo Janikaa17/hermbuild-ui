@@ -422,6 +422,33 @@ button.ghost {
     rgba(8, 13, 24, 0.82);
 }
 
+.flow-grid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.worker-flow-card {
+  border: 1px solid rgba(95, 122, 173, 0.38);
+  border-radius: 14px;
+  padding: 0.6rem;
+  background: linear-gradient(180deg, rgba(12, 19, 34, 0.8), rgba(9, 15, 28, 0.86));
+}
+
+.worker-flow-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.worker-flow-wrap {
+  height: 260px;
+}
+
 .flow-wrap .react-flow__controls {
   background: rgba(12, 18, 32, 0.9);
   border: 1px solid rgba(93, 113, 154, 0.45);

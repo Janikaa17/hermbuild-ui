@@ -9,12 +9,12 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --bg: #090b12;
-  --panel: #121726;
-  --panel-border: #252d41;
+  --bg: #060912;
+  --panel: #121a2d;
+  --panel-border: #2a3956;
   --text: #e6ebfa;
-  --muted: #9aa5c5;
-  --accent: #5ea1ff;
+  --muted: #97a8cc;
+  --accent: #66b3ff;
   --success: #34d399;
   --danger: #f87171;
   --warning: #f59e0b;
@@ -26,7 +26,10 @@
 
 body {
   margin: 0;
-  background: radial-gradient(circle at top, #10172a 0, var(--bg) 45%);
+  background:
+    radial-gradient(circle at 10% -20%, rgba(91, 145, 255, 0.16), transparent 36%),
+    radial-gradient(circle at 90% -20%, rgba(122, 105, 255, 0.14), transparent 38%),
+    radial-gradient(circle at top, #10172a 0, var(--bg) 45%);
   color: var(--text);
 }
 
@@ -35,7 +38,7 @@ body {
 }
 
 .app-shell {
-  max-width: 1400px;
+  max-width: 1580px;
   margin: 0 auto;
   padding: 1.25rem;
   display: grid;
@@ -47,7 +50,7 @@ body {
 
 .dashboard-shell {
   display: grid;
-  gap: 1rem;
+  gap: 1.2rem;
   position: relative;
   z-index: 2;
 }
@@ -98,7 +101,7 @@ body {
   overflow: hidden;
   background:
     radial-gradient(circle at 80% -20%, rgba(94, 161, 255, 0.2), transparent 55%),
-    linear-gradient(180deg, rgba(19, 26, 42, 0.96) 0%, rgba(14, 19, 32, 0.97) 100%);
+    linear-gradient(180deg, rgba(19, 26, 42, 0.98) 0%, rgba(12, 18, 31, 0.98) 100%);
 }
 
 .kpi-card::after {
@@ -192,15 +195,21 @@ body {
 
 .panel {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.01) 100%),
-    linear-gradient(180deg, rgba(19, 26, 42, 0.92) 0%, rgba(14, 19, 32, 0.95) 100%);
-  border: 1px solid rgba(101, 123, 170, 0.28);
-  border-radius: 14px;
-  padding: 1rem;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.01) 100%),
+    linear-gradient(180deg, rgba(17, 25, 43, 0.92) 0%, rgba(11, 16, 30, 0.95) 100%);
+  border: 1px solid rgba(118, 146, 204, 0.3);
+  border-radius: 18px;
+  padding: 1.1rem;
   backdrop-filter: blur(10px);
   box-shadow:
-    0 18px 30px rgba(3, 8, 18, 0.34),
+    0 18px 40px rgba(3, 8, 18, 0.42),
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition: transform 180ms ease, border-color 180ms ease;
+}
+
+.panel:hover {
+  transform: translateY(-1px);
+  border-color: rgba(135, 168, 233, 0.42);
 }
 
 h1,
@@ -263,8 +272,8 @@ h2 {
 
 .config-panel .field-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
 }
 
 label span {
@@ -295,15 +304,15 @@ select:focus {
 .row {
   margin-top: 0.85rem;
   display: grid;
-  grid-template-columns: 160px repeat(3, minmax(120px, 1fr));
-  gap: 0.65rem;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 0.75rem;
 }
 
 button {
   cursor: pointer;
   font-weight: 600;
-  background: linear-gradient(180deg, #29579a 0%, #1d3f73 100%);
-  box-shadow: 0 8px 14px rgba(10, 20, 40, 0.32);
+  background: linear-gradient(180deg, #3572c4 0%, #244f8f 100%);
+  box-shadow: 0 10px 18px rgba(10, 20, 40, 0.35);
 }
 
 button:hover {
@@ -344,6 +353,47 @@ button.ghost {
   height: 100%;
   background: linear-gradient(90deg, #4f8df0, #7cc4ff);
   transition: width 300ms ease;
+}
+
+.flow-wrap {
+  height: 520px;
+  border: 1px solid rgba(93, 113, 154, 0.45);
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(74, 117, 202, 0.12), transparent 28%),
+    rgba(8, 13, 24, 0.96);
+}
+
+.flow-wrap .react-flow__controls {
+  background: rgba(12, 18, 32, 0.9);
+  border: 1px solid rgba(93, 113, 154, 0.45);
+  border-radius: 10px;
+}
+
+.flow-wrap .react-flow__edge-path {
+  stroke: #5f8fd8;
+  stroke-width: 2.2;
+}
+
+.flow-wrap .react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 7 6;
+}
+
+.flow-wrap .react-flow__attribution {
+  display: none;
+}
+
+@keyframes flowNodePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(94, 161, 255, 0.25);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(94, 161, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(94, 161, 255, 0);
+  }
 }
 
 .timeline-item {

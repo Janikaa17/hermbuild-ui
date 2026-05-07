@@ -1,32 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactFlow, { Background, Controls, MarkerType } from 'reactflow'
+import 'reactflow/dist/style.css'
 
 type RunStatus = 'idle' | 'running' | 'completed' | 'failed'
 type PhaseStatus = 'pending' | 'running' | 'success' | 'failed'
 type LogLevel = 'info' | 'warning' | 'error'
+type EventName =
+  | 'sse_log_server_started'
+  | 'pipeline_started'
+  | 'pipeline_failed'
+  | 'pipeline_completed'
+  | 'pipeline_completed_with_failures'
+  | 'sse_keep_alive_waiting_for_signal'
+  | 'sse_log_server_stopping'
+  | 'orchestrator_run_started'
+  | 'input_bundle_ready'
+  | 'git_clone_started'
+  | 'git_clone_completed'
+  | 'tee_start'
+  | 'enclave_launch_started'
+  | 'enclave_launch_completed'
+  | 'vsock_send_started'
+  | 'vsock_send_completed'
+  | 'vsock_receive_started'
+  | 'vsock_receive_completed'
+  | 'enclave_log_line'
+  | 'tee_worker_failed'
+  | 'enclave_terminated'
+  | 'enclave_terminate_failed'
+  | 'tee_completed'
+  | 'nitro_cli_command_started'
+  | 'nitro_cli_stream_line'
+  | 'nitro_cli_command_completed'
 
 type RunConfig = {
-  repoUrl: string
-  eifPath: string
-  enclaveCount: number
-  cpuCount: number
-  memoryMib: number
-  baseEnclaveCid: number
-  enclaveTimeoutSec: number
-  workdir: string
-  sseHost: string
-  ssePort: string
-}
-
-type Phase = {
-  id: string
-  label: string
-  status: PhaseStatus
-  message: string
+  repo_url: string
+  enclave_count: number
+  cpu_count: number
+  memory_mib: number
+  'timeout-sec': number
 }
 
 type WorkerState = {
   workerIndex: number
-  cid: number
+  cid: number | null
   status: PhaseStatus
   phase: string
   durationMs: number
@@ -48,60 +65,120 @@ type RunHistoryItem = {
   total: number
   passed: number
   failed: number
-  mode: 'mock' | 'live'
+  mode: 'live'
 }
 
-const PHASE_LABELS = [
-  'Clone repository',
-  'Resolve commit',
-  'Prepare bundle + manifest',
-  'Launch enclaves',
-  'Send framed payloads',
-  'Receive worker responses',
-  'Persist results + terminate enclaves',
-  'Generate summary',
+type SsePayload = {
+  timestamp?: string
+  level?: string
+  logger?: string
+  message?: string
+  phase?: string
+  run_id?: string
+  worker_index?: number
+  cid?: number
+  enclave_id?: string
+  repo_url?: string
+  commit_sha?: string
+  response_status?: string
+  error?: string
+  line_number?: number
+  line?: string
+  command?: string
+  stream?: string
+  exception?: string
+}
+
+const FAILURE_EVENTS: EventName[] = ['pipeline_failed', 'pipeline_completed_with_failures', 'tee_worker_failed', 'enclave_terminate_failed']
+const COMPLETE_EVENTS: EventName[] = ['pipeline_completed']
+const TERMINAL_EVENTS: EventName[] = ['pipeline_completed', 'pipeline_failed', 'pipeline_completed_with_failures', 'sse_log_server_stopping']
+const FLOW_MILESTONES: EventName[] = [
+  'enclave_launch_started',
+  'enclave_launch_completed',
+  'vsock_send_started',
+  'vsock_send_completed',
+  'vsock_receive_started',
+  'vsock_receive_completed',
+  'nitro_cli_command_started',
+  'nitro_cli_command_completed',
+  'tee_worker_failed',
+  'enclave_terminated',
+  'enclave_terminate_failed',
+  'tee_completed',
+  'pipeline_completed',
 ]
+const MAIN_FLOW_EVENTS: EventName[] = [
+  'enclave_launch_started',
+  'enclave_launch_completed',
+  'vsock_send_started',
+  'vsock_send_completed',
+  'vsock_receive_started',
+  'vsock_receive_completed',
+  'nitro_cli_command_started',
+  'nitro_cli_command_completed',
+  'enclave_terminated',
+  'tee_completed',
+  'pipeline_completed',
+]
+const SUCCESS_PROGRESS_EVENTS: EventName[] = [
+  'enclave_launch_completed',
+  'vsock_send_completed',
+  'vsock_receive_completed',
+  'nitro_cli_command_completed',
+  'enclave_terminated',
+  'tee_completed',
+  'pipeline_completed',
+]
+const FLOW_LAYOUT: Record<string, { x: number; y: number }> = {
+  enclave_launch_started: { x: 0, y: 0 },
+  enclave_launch_completed: { x: 320, y: 0 },
+  vsock_send_started: { x: 640, y: 0 },
+  vsock_send_completed: { x: 960, y: 0 },
+  vsock_receive_started: { x: 1280, y: 0 },
+  vsock_receive_completed: { x: 1600, y: 0 },
+  nitro_cli_command_started: { x: 1920, y: 0 },
+  nitro_cli_command_completed: { x: 2240, y: 0 },
+  enclave_terminated: { x: 2560, y: 0 },
+  tee_completed: { x: 2880, y: 0 },
+  pipeline_completed: { x: 3200, y: 0 },
+  tee_worker_failed: { x: 1600, y: 220 },
+  enclave_terminate_failed: { x: 2240, y: 220 },
+}
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? 'https://3.87.217.35:8080'
+const API_ROOT = import.meta.env.DEV ? '/api' : API_BASE_URL
+const INITIAL_FLOW_STATUS = Object.fromEntries(FLOW_MILESTONES.map((eventName) => [eventName, 'pending'])) as Record<string, PhaseStatus>
 
 const DEFAULT_CONFIG: RunConfig = {
-  repoUrl: 'https://github.com/example/hermbuild-demo-repo',
-  eifPath: './enclaves/hermbuild.eif',
-  enclaveCount: 3,
-  cpuCount: 2,
-  memoryMib: 512,
-  baseEnclaveCid: 18,
-  enclaveTimeoutSec: 120,
-  workdir: '/tmp/hermbuild-run',
-  sseHost: 'localhost',
-  ssePort: '8000',
+  repo_url: 'file:///home/ec2-user/major-project/demo-node-app',
+  enclave_count: 1,
+  cpu_count: 2,
+  memory_mib: 1024,
+  'timeout-sec': 300,
 }
 
-const createInitialPhases = (): Phase[] =>
-  PHASE_LABELS.map((label, index) => ({
-    id: `phase-${index}`,
-    label,
-    status: 'pending',
-    message: 'Waiting',
-  }))
-
 const createWorkers = (config: RunConfig): WorkerState[] =>
-  Array.from({ length: config.enclaveCount }, (_, workerIndex) => ({
+  Array.from({ length: config.enclave_count }, (_, workerIndex) => ({
     workerIndex,
-    cid: config.baseEnclaveCid + workerIndex,
+    cid: null,
     status: 'pending',
     phase: 'Pending',
     durationMs: 0,
     lastMessage: 'Not started',
   }))
 
+const formatEventLabel = (eventName: string) =>
+  eventName
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+
 function App() {
-  const [activeView, setActiveView] = useState<'overview' | 'runs' | 'guide'>('overview')
+  const [activeView, setActiveView] = useState<'overview' | 'runs'>('overview')
   const [runStatus, setRunStatus] = useState<RunStatus>('idle')
   const [runId, setRunId] = useState<string>('demo-run')
   const [config, setConfig] = useState<RunConfig>(DEFAULT_CONFIG)
-  const [phases, setPhases] = useState<Phase[]>(createInitialPhases)
   const [workers, setWorkers] = useState<WorkerState[]>(createWorkers(DEFAULT_CONFIG))
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [activeMode, setActiveMode] = useState<'mock' | 'live'>('mock')
   const [healthState, setHealthState] = useState<'unknown' | 'checking' | 'up' | 'down'>('unknown')
   const [configError, setConfigError] = useState('')
   const [activeLevel, setActiveLevel] = useState<'all' | LogLevel>('all')
@@ -111,8 +188,11 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('')
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([])
+  const [flowStatus, setFlowStatus] = useState<Record<string, PhaseStatus>>(INITIAL_FLOW_STATUS)
+  const [finalCounts, setFinalCounts] = useState<{ passed: number; failed: number } | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const timers = useRef<number[]>([])
+  const workerStartTimes = useRef<Record<number, number>>({})
   const eventSourceRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -156,22 +236,18 @@ function App() {
   const resetDashboard = () => {
     timers.current.forEach((timerId) => window.clearTimeout(timerId))
     timers.current = []
+    workerStartTimes.current = {}
     eventSourceRef.current?.close()
     eventSourceRef.current = null
     setRunStatus('idle')
     setRunId('demo-run')
     setErrorMessage('')
     setStartedAt(null)
-    setPhases(createInitialPhases())
     setWorkers(createWorkers(config))
     setLogs([])
     setConfigError('')
-  }
-
-  const updatePhase = (phaseIndex: number, status: PhaseStatus, message: string) => {
-    setPhases((prev) =>
-      prev.map((phase, index) => (index === phaseIndex ? { ...phase, status, message } : phase)),
-    )
+    setFlowStatus(INITIAL_FLOW_STATUS)
+    setFinalCounts(null)
   }
 
   const updateWorker = (workerIndex: number, patch: Partial<WorkerState>) => {
@@ -180,129 +256,139 @@ function App() {
     )
   }
 
-  const runMockFlow = () => {
-    const steps = PHASE_LABELS.map((label, index) => ({ label, index }))
-    let elapsed = 0
-
-    steps.forEach(({ label, index }) => {
-      elapsed += 800
-      timers.current.push(
-        window.setTimeout(() => {
-          updatePhase(index, 'running', `Running ${label.toLowerCase()}`)
-          pushLog({ level: 'info', workerIndex: null, message: `[phase] ${label} started` })
-        }, elapsed),
-      )
-
-      elapsed += 900
-      timers.current.push(
-        window.setTimeout(() => {
-          updatePhase(index, 'success', `${label} completed`)
-          pushLog({ level: 'info', workerIndex: null, message: `[phase] ${label} completed` })
-        }, elapsed),
-      )
-    })
-
-    for (let workerIndex = 0; workerIndex < config.enclaveCount; workerIndex += 1) {
-      const startMs = 2000 + workerIndex * 300
-      const endMs = 5000 + workerIndex * 550
-      const hasFailed = workerIndex === config.enclaveCount - 1
-
-      timers.current.push(
-        window.setTimeout(() => {
-          updateWorker(workerIndex, {
-            status: 'running',
-            phase: 'Executing inside enclave',
-            lastMessage: 'Receiving framed payload',
-          })
-          pushLog({
-            level: 'info',
-            workerIndex,
-            message: `worker-${workerIndex} launched with CID ${config.baseEnclaveCid + workerIndex}`,
-          })
-        }, startMs),
-      )
-
-      timers.current.push(
-        window.setTimeout(() => {
-          updateWorker(workerIndex, {
-            status: hasFailed ? 'failed' : 'success',
-            phase: hasFailed ? 'Validation failed' : 'Completed',
-            durationMs: endMs - startMs,
-            lastMessage: hasFailed
-              ? 'Build hash mismatch detected'
-              : 'Signed result persisted to enclave-results',
-          })
-          pushLog({
-            level: hasFailed ? 'error' : 'info',
-            workerIndex,
-            message: hasFailed
-              ? `worker-${workerIndex} failed: Build hash mismatch`
-              : `worker-${workerIndex} completed successfully`,
-          })
-          if (hasFailed) {
-            setRunStatus('failed')
-          }
-        }, endMs),
-      )
+  const setEventStatus = (eventName: EventName, status: PhaseStatus) => {
+    if (!FLOW_MILESTONES.includes(eventName)) {
+      return
     }
-
-    timers.current.push(
-      window.setTimeout(() => {
-        setRunStatus((prev) => (prev === 'failed' ? 'failed' : 'completed'))
-      }, elapsed + 1100),
-    )
+    setFlowStatus((prev) => ({ ...prev, [eventName]: status }))
   }
 
-  const normalizeEvent = (raw: unknown): Partial<LogEntry> & { phaseIndex?: number; phaseStatus?: PhaseStatus } => {
-    if (typeof raw !== 'object' || raw === null) {
-      return { message: String(raw), level: 'info', workerIndex: null }
+  const updateWorkerFromEvent = (payload: SsePayload, eventName: string) => {
+    if (typeof payload.worker_index !== 'number') {
+      return
     }
-    const asRecord = raw as Record<string, unknown>
-    const level = (asRecord.level as LogLevel | undefined) ?? 'info'
-    const msg = (asRecord.message as string | undefined) ?? JSON.stringify(asRecord)
-    const workerIndex =
-      typeof asRecord.workerIndex === 'number'
-        ? asRecord.workerIndex
-        : typeof asRecord.worker === 'number'
-          ? asRecord.worker
-          : null
-    return {
-      level: level === 'warning' || level === 'error' ? level : 'info',
-      message: msg,
-      workerIndex,
-      phaseIndex: typeof asRecord.phaseIndex === 'number' ? asRecord.phaseIndex : undefined,
-      phaseStatus:
-        asRecord.phaseStatus === 'pending' ||
-        asRecord.phaseStatus === 'running' ||
-        asRecord.phaseStatus === 'success' ||
-        asRecord.phaseStatus === 'failed'
-          ? asRecord.phaseStatus
-          : undefined,
+    const now = Date.now()
+    const workerIndex = payload.worker_index
+    if (eventName === 'enclave_launch_started') {
+      workerStartTimes.current[workerIndex] = now
+    }
+    const durationMs = workerStartTimes.current[workerIndex] ? now - workerStartTimes.current[workerIndex] : 0
+    const phase = payload.phase ?? eventName
+    const lastMessage = payload.error ?? payload.line ?? payload.exception ?? eventName
+    const status: PhaseStatus =
+      eventName === 'tee_worker_failed' || eventName === 'enclave_terminate_failed'
+        ? 'failed'
+        : eventName === 'tee_completed' || eventName === 'enclave_terminated'
+          ? 'success'
+          : 'running'
+    updateWorker(workerIndex, {
+      ...(typeof payload.cid === 'number' ? { cid: payload.cid } : {}),
+      phase,
+      status,
+      durationMs,
+      lastMessage,
+    })
+  }
+
+  const parseSsePayload = (rawData: string): SsePayload => {
+    const trimmed = rawData.trim()
+    if (!trimmed) {
+      return {
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        logger: 'sse',
+        message: 'empty_event',
+      }
+    }
+
+    try {
+      return JSON.parse(trimmed) as SsePayload
+    } catch {
+      // Some streams send lines like: "log\t{...json...}"
+      const firstBrace = trimmed.indexOf('{')
+      const lastBrace = trimmed.lastIndexOf('}')
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        const maybeJson = trimmed.slice(firstBrace, lastBrace + 1)
+        try {
+          return JSON.parse(maybeJson) as SsePayload
+        } catch {
+          return {
+            timestamp: new Date().toISOString(),
+            level: 'INFO',
+            logger: 'sse',
+            message: trimmed,
+          }
+        }
+      }
+      return {
+        timestamp: new Date().toISOString(),
+        level: 'INFO',
+        logger: 'sse',
+        message: trimmed,
+      }
+    }
+  }
+
+  const applySseEvent = (payload: SsePayload) => {
+    const eventName = payload.message as EventName | undefined
+    const level = payload.level?.toUpperCase() === 'ERROR' ? 'error' : payload.level?.toUpperCase() === 'WARNING' ? 'warning' : 'info'
+    const workerIndex = typeof payload.worker_index === 'number' ? payload.worker_index : null
+    const logMessage = `${payload.message ?? 'unknown_event'}${payload.error ? ` | ${payload.error}` : ''}${payload.line ? ` | ${payload.line}` : ''}`
+    pushLog({ level, workerIndex, message: logMessage })
+
+    if (!eventName) {
+      return
+    }
+    if (eventName.endsWith('_started')) {
+      setEventStatus(eventName, 'running')
+    } else {
+      setEventStatus(eventName, 'success')
+    }
+    if (FAILURE_EVENTS.includes(eventName)) {
+      setRunStatus('failed')
+      setErrorMessage(payload.error ?? payload.exception ?? eventName)
+      if (eventName === 'pipeline_failed') {
+        setEventStatus('pipeline_completed', 'failed')
+      }
+    }
+    if (COMPLETE_EVENTS.includes(eventName)) {
+      setRunStatus('completed')
+    }
+    if (
+      typeof (payload as Record<string, unknown>).successful_workers === 'number' &&
+      typeof (payload as Record<string, unknown>).failed_workers === 'number'
+    ) {
+      setFinalCounts({
+        passed: (payload as Record<string, number>).successful_workers,
+        failed: (payload as Record<string, number>).failed_workers,
+      })
+    }
+
+    if (eventName === 'pipeline_started') {
+      setRunStatus('running')
+    }
+
+    updateWorkerFromEvent(payload, eventName)
+
+    if (TERMINAL_EVENTS.includes(eventName)) {
+      eventSourceRef.current?.close()
+      eventSourceRef.current = null
     }
   }
 
   const connectLiveEvents = () => {
-    const endpoint = `http://${config.sseHost}:${config.ssePort}/events`
+    const endpoint = `${API_ROOT}/events`
     const source = new EventSource(endpoint)
     eventSourceRef.current = source
 
-    source.onmessage = (event) => {
-      let parsed: unknown = event.data
-      try {
-        parsed = JSON.parse(event.data)
-      } catch {
-        parsed = event.data
-      }
-      const normalized = normalizeEvent(parsed)
-      pushLog({
-        level: normalized.level ?? 'info',
-        workerIndex: normalized.workerIndex ?? null,
-        message: normalized.message ?? 'Received event',
-      })
-      if (typeof normalized.phaseIndex === 'number' && normalized.phaseStatus) {
-        updatePhase(normalized.phaseIndex, normalized.phaseStatus, normalized.message ?? 'Updated')
-      }
+    const handleIncomingEvent = (event: MessageEvent) => {
+      const parsed = parseSsePayload(String(event.data))
+      applySseEvent(parsed)
     }
+    // Handle named SSE events like: "event: log"
+    source.addEventListener('log', handleIncomingEvent as EventListener)
+    // Keep a fallback for default "message" events.
+    source.onmessage = handleIncomingEvent
 
     source.onerror = () => {
       setErrorMessage('SSE connection dropped. Check backend /events endpoint.')
@@ -314,7 +400,7 @@ function App() {
   const checkHealth = async () => {
     setHealthState('checking')
     try {
-      const res = await fetch(`http://${config.sseHost}:${config.ssePort}/health`)
+      const res = await fetch(`${API_ROOT}/health`)
       setHealthState(res.ok ? 'up' : 'down')
     } catch {
       setHealthState('down')
@@ -322,19 +408,19 @@ function App() {
   }
 
   const validateConfig = () => {
-    if (!config.repoUrl.startsWith('http')) {
-      return 'repoUrl should start with http/https.'
+    if (!config.repo_url.includes('://')) {
+      return 'repo_url must be a valid URL format (for example file:///... or https://...).'
     }
-    if (config.enclaveCount < 1) {
-      return 'enclaveCount should be at least 1.'
+    if (config.enclave_count < 1) {
+      return 'enclave_count should be at least 1.'
     }
-    if (config.cpuCount < 1 || config.memoryMib < 128) {
-      return 'cpuCount and memoryMib values are too low.'
+    if (config.cpu_count < 1 || config.memory_mib < 128) {
+      return 'cpu_count and memory_mib values are too low.'
     }
     return ''
   }
 
-  const handleStart = () => {
+  const handleStart = async () => {
     const validationError = validateConfig()
     if (validationError) {
       setConfigError(validationError)
@@ -345,17 +431,30 @@ function App() {
     setRunId(`run-${Date.now()}`)
     setWorkers(createWorkers(config))
     setStartedAt(Date.now())
-    pushLog({ level: 'info', workerIndex: null, message: `Run started in ${activeMode.toUpperCase()} mode` })
-    if (activeMode === 'mock') {
-      runMockFlow()
-    } else {
-      connectLiveEvents()
+    pushLog({ level: 'info', workerIndex: null, message: 'Run started in LIVE mode' })
+    connectLiveEvents()
+    try {
+      const response = await fetch(`${API_ROOT}/rebuild-last`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (!response.ok) {
+        const body = await response.text()
+        setRunStatus('failed')
+        setErrorMessage(`Failed to trigger run: ${response.status} ${body}`)
+      }
+    } catch {
+      setRunStatus('failed')
+      setErrorMessage('Failed to trigger run. Check API host/cert and network access.')
     }
   }
 
   const summary = useMemo(() => {
-    const passed = workers.filter((worker) => worker.status === 'success').length
-    const failed = workers.filter((worker) => worker.status === 'failed').length
+    const workerPassed = workers.filter((worker) => worker.status === 'success').length
+    const workerFailed = workers.filter((worker) => worker.status === 'failed').length
+    const passed = finalCounts?.passed ?? workerPassed
+    const failed = finalCounts?.failed ?? workerFailed
     const durationMs = startedAt ? Date.now() - startedAt : 0
     return {
       total: workers.length,
@@ -377,7 +476,7 @@ function App() {
       total: summary.total,
       passed: summary.passed,
       failed: summary.failed,
-      mode: activeMode,
+      mode: 'live',
     }
     setRunHistory((prev) => {
       if (prev[0]?.runId === runId) {
@@ -387,7 +486,7 @@ function App() {
       localStorage.setItem('hermbuild-run-history', JSON.stringify(next))
       return next
     })
-  }, [runStatus, runId, summary.total, summary.passed, summary.failed, activeMode])
+  }, [runStatus, runId, summary.total, summary.passed, summary.failed])
 
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
@@ -398,10 +497,79 @@ function App() {
     })
   }, [logs, activeLevel, workerFilter, query])
 
-  const completedPhases = phases.filter((phase) => phase.status === 'success').length
-  const phaseProgress = Math.round((completedPhases / phases.length) * 100)
+  const completedPhases = SUCCESS_PROGRESS_EVENTS.filter((eventName) => flowStatus[eventName] === 'success').length
+  const phaseProgress = SUCCESS_PROGRESS_EVENTS.length ? Math.round((completedPhases / SUCCESS_PROGRESS_EVENTS.length) * 100) : 0
   const runningWorkers = workers.filter((worker) => worker.status === 'running').length
   const successRate = summary.total ? Math.round((summary.passed / summary.total) * 100) : 0
+  const flowNodes = useMemo(
+    () =>
+      FLOW_MILESTONES.map((eventName) => {
+        const status = flowStatus[eventName]
+        const border =
+          status === 'success'
+            ? '1px solid #34d399'
+            : status === 'running'
+              ? '1px solid #5ea1ff'
+              : status === 'failed'
+                ? '1px solid #f87171'
+                : '1px solid #4b5563'
+        const background =
+          status === 'success'
+            ? 'rgba(16, 90, 66, 0.5)'
+            : status === 'running'
+              ? 'repeating-linear-gradient(135deg, rgba(47, 93, 168, 0.72) 0 12px, rgba(28, 62, 122, 0.72) 12px 24px)'
+              : status === 'failed'
+                ? 'rgba(115, 27, 27, 0.5)'
+                : 'rgba(26, 35, 56, 0.7)'
+        return {
+          id: eventName,
+          position: FLOW_LAYOUT[eventName],
+          data: { label: `${formatEventLabel(eventName)}\n${status.toUpperCase()}` },
+          style: {
+            width: 280,
+            minHeight: 110,
+            whiteSpace: 'pre-wrap',
+            border,
+            borderRadius: 14,
+            background,
+            color: '#e6ebfa',
+            fontSize: 14,
+            fontWeight: 600,
+            transition: 'all 280ms ease',
+            animation: status === 'running' ? 'flowNodePulse 1.4s ease-in-out infinite' : 'none',
+          },
+        }
+      }),
+    [flowStatus],
+  )
+  const flowEdges = useMemo(
+    () => [
+      ...MAIN_FLOW_EVENTS.slice(0, -1).map((eventName, index) => ({
+        id: `${eventName}-${MAIN_FLOW_EVENTS[index + 1]}`,
+        source: eventName,
+        target: MAIN_FLOW_EVENTS[index + 1],
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+        animated: true,
+      })),
+      {
+        id: 'branch-vsock_receive_completed-tee_worker_failed',
+        source: 'vsock_receive_completed',
+        target: 'tee_worker_failed',
+        type: 'smoothstep' as const,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+        animated: true,
+      },
+      {
+        id: 'branch-nitro_cli_command_started-enclave_terminate_failed',
+        source: 'nitro_cli_command_started',
+        target: 'enclave_terminate_failed',
+        type: 'smoothstep' as const,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
+        animated: true,
+      },
+    ],
+    [],
+  )
 
   return (
     <main className="app-shell">
@@ -416,9 +584,6 @@ function App() {
         </button>
         <button className={activeView === 'runs' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveView('runs')}>
           Run History
-        </button>
-        <button className={activeView === 'guide' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveView('guide')}>
-          Demo Guide
         </button>
         <div className="health-box">
           <p>Backend health: <span className={`health-${healthState}`}>{healthState}</span></p>
@@ -490,16 +655,6 @@ function App() {
           ))}
         </div>
         <div className="row">
-          <label className="mode-toggle">
-            Mode
-            <select
-              value={activeMode}
-              onChange={(event) => setActiveMode(event.target.value as 'mock' | 'live')}
-            >
-              <option value="mock">Mock Demo</option>
-              <option value="live">Live SSE</option>
-            </select>
-          </label>
           <button onClick={handleStart} disabled={runStatus === 'running'}>
             Start Run
           </button>
@@ -518,39 +673,21 @@ function App() {
         {configError && <p className="error-line">{configError}</p>}
       </section>
 
-      <section className="middle-grid">
+      <section>
         <article className="panel">
           <div className="section-head">
-            <h2>Live Pipeline Timeline</h2>
-            <span className="chip">Lifecycle</span>
+            <h2>Pipeline Flow (React Flow)</h2>
+            <span className="chip">SSE Lifecycle</span>
           </div>
           <div className="timeline-progress">
             <div className="timeline-progress-fill" style={{ width: `${phaseProgress}%` }} />
           </div>
-          <div className="timeline">
-            {phases.map((phase) => (
-              <div key={phase.id} className={`timeline-item timeline-${phase.status}`}>
-                <div className="dot" />
-                <div>
-                  <p className="phase-title">{phase.label}</p>
-                  <p className="phase-message">{phase.message}</p>
-                </div>
-              </div>
-            ))}
+          <div className="flow-wrap">
+            <ReactFlow nodes={flowNodes} edges={flowEdges} fitView fitViewOptions={{ maxZoom: 1.2, padding: 0.15 }}>
+              <Controls />
+              <Background />
+            </ReactFlow>
           </div>
-        </article>
-
-        <article className="panel">
-          <div className="section-head">
-            <h2>Architecture Explainer</h2>
-            <span className="chip">Viva Ready</span>
-          </div>
-          <ul className="explainer">
-            <li>Parent orchestrator drives lifecycle and run-level guarantees.</li>
-            <li>Fanout starts parallel enclave workers for isolated execution.</li>
-            <li>Framed JSON payloads are exchanged over vsock channels.</li>
-            <li>Cleanup is guaranteed with terminate-enclave in finalization logic.</li>
-          </ul>
         </article>
       </section>
 
@@ -682,20 +819,6 @@ function App() {
         </section>
       )}
 
-      {activeView === 'guide' && (
-        <section className="panel guide-panel">
-          <h2>How To Present This In 3 Minutes</h2>
-          <ol>
-            <li>Open Overview and explain the run configuration inputs.</li>
-            <li>Click Check /health to prove backend connectivity.</li>
-            <li>Start a run in Mock or Live mode.</li>
-            <li>Narrate phase progress in timeline.</li>
-            <li>Show worker fanout parallelism and one failed worker.</li>
-            <li>Filter logs by level/worker and search one keyword.</li>
-            <li>Conclude with final result card and artifacts.</li>
-          </ol>
-        </section>
-      )}
       </section>
     </main>
   )
